@@ -158,8 +158,8 @@ services:
       - influxdb2-admin-password
       - influxdb2-admin-token
     volumes:
-      - ./data:/var/lib/influxdb2
-      - ./config:/etc/influxdb2
+      - ./influxdb/data:/var/lib/influxdb2
+      - ./influxdb/config:/etc/influxdb2
     networks:
       - crypto_network
     deploy:
