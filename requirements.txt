@@ -1,0 +1,10 @@
+requests
+kafka-python
+
+kafka-python
+polars
+pandas
+pandas-ta
+duckdb
+toolz
+rx
