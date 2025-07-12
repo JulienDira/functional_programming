@@ -3,7 +3,7 @@ import requests
 from kafka import KafkaProducer
 from concurrent.futures import ThreadPoolExecutor
 from time import time, sleep
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 import os
 
 # --- PURE FUNCTIONS ---
@@ -86,6 +86,12 @@ def process_coin(producer: KafkaProducer, topic: str, coin: str, interval: str) 
         print(f"❌ {coin}/{interval} -> {e}")
         return 0
 
+# def process_coin(producer, topic, coin, interval) -> Union[int, str]:
+#     try:
+#         data = fetch_kline_data(coin, interval)
+#         return send_to_kafka(producer, topic, data)
+#     except Exception as e:
+#         return f"Error: {coin}/{interval} -> {e}"
 
 def process_all(producer: KafkaProducer, topic: str, coins: List[str], interval: str) -> int:
     """Traitement en parallèle des coins."""

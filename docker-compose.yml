@@ -1,3 +1,14 @@
+# ============================================================================
+# DOCKER COMPOSE - CRYPTO PIPELINE
+# ============================================================================
+# Architecture: Kafka + InfluxDB + Multi-interval producers/consumers
+# Network: crypto_network (external)
+# ============================================================================
+
+# ============================================================================
+# TEMPLATES & DEFAULTS
+# ============================================================================
+
 x-producer-defaults: &producer-template
   build:
     context: ./producer
@@ -20,7 +31,51 @@ x-producer-defaults: &producer-template
         memory: 512m
         cpus: '0.2'
 
+x-consumer-defaults: &consumer-template
+  build:
+    context: ./consumer
+    dockerfile: Dockerfile
+  volumes:
+    - ./consumer/consumer.py:/app/consumer.py
+    - consumer:/data
+  depends_on:
+    - kafka
+  secrets:
+    - influxdb2-admin-token
+  command: python3 /app/consumer.py
+  networks:
+    - crypto_network
+  restart: unless-stopped
+  deploy:
+    resources:
+      limits:
+        memory: 1g
+        cpus: '0.5'
+      reservations:
+        memory: 512m
+        cpus: '0.2'
+
+x-env-defaults: &env-template
+  KAFKA_SERVERS: broker:29092
+  INFLUX_URL: http://influxdb2:8086
+  INFLUX_TOKEN_FILE: /run/secrets/influxdb2-admin-token
+  INFLUX_ORG: docs
+  INFLUX_BUCKET: marketdata
+  INFLUX_MEASUREMENT: kline
+  LOG_PATH: data/prices-1s.jsonl
+  RAW_BUCKET: marketdata_raw
+  ENRICHED_BUCKET: marketdata_enriched
+  RAW_LOG_PATH: data/raw.jsonl
+  ENRICHED_LOG_PATH: data/enriched.jsonl
+
+# ============================================================================
+# INFRASTRUCTURE SERVICES
+# ============================================================================
+
 services:
+  # --------------------------------------------------------------------------
+  # ZOOKEEPER - Kafka Coordination
+  # --------------------------------------------------------------------------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     hostname: zookeeper
@@ -35,43 +90,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g  # ou plus si tu as de la marge
+          memory: 1g
           cpus: '1.0'
         reservations:
           memory: 1g
           cpus: '0.5'
 
-  control-center:
-    image: confluentinc/cp-enterprise-control-center:7.5.0
-    hostname: control-center
-    container_name: control-center
-    depends_on:
-      - kafka
-      - zookeeper
-    ports:
-      - "9021:9021"
-    environment:
-      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
-      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'connect:8083'
-      CONTROL_CENTER_KSQL_KSQLDB1_URL: "http://ksqldb-server:8088"
-      CONTROL_CENTER_KSQL_KSQLDB1_ADVERTISED_URL: "http://localhost:8088"
-      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
-      CONTROL_CENTER_REPLICATION_FACTOR: 1
-      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
-      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
-      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
-      PORT: 9021
-    networks:
-      - crypto_network
-    deploy:
-      resources:
-        limits:
-          memory: 1g  # ou plus si tu as de la marge
-          cpus: '1.0'
-        reservations:
-          memory: 1g
-          cpus: '0.5'
-
+  # --------------------------------------------------------------------------
+  # KAFKA BROKER - Message Streaming
+  # --------------------------------------------------------------------------
   kafka:
     image: confluentinc/cp-server:7.5.0
     hostname: broker
@@ -106,45 +133,203 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g  # ou plus si tu as de la marge
+          memory: 1g
           cpus: '1.0'
         reservations:
           memory: 1g
           cpus: '0.5'
 
+  # --------------------------------------------------------------------------
+  # INFLUXDB2 - Time Series Database
+  # --------------------------------------------------------------------------
+  influxdb2:
+    image: influxdb:2
+    ports:
+      - 8086:8086
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME_FILE: /run/secrets/influxdb2-admin-username
+      DOCKER_INFLUXDB_INIT_PASSWORD_FILE: /run/secrets/influxdb2-admin-password
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN_FILE: /run/secrets/influxdb2-admin-token
+      DOCKER_INFLUXDB_INIT_ORG: docs
+      DOCKER_INFLUXDB_INIT_BUCKET: home
+    secrets:
+      - influxdb2-admin-username
+      - influxdb2-admin-password
+      - influxdb2-admin-token
+    volumes:
+      - ./data:/var/lib/influxdb2
+      - ./config:/etc/influxdb2
+    networks:
+      - crypto_network
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+        reservations:
+          memory: 1g
+          cpus: '0.5'
+
+# ============================================================================
+# MONITORING & MANAGEMENT
+# ============================================================================
+
+  # --------------------------------------------------------------------------
+  # KAFKA CONTROL CENTER - Management UI
+  # --------------------------------------------------------------------------
+  control-center:
+    image: confluentinc/cp-enterprise-control-center:7.5.0
+    hostname: control-center
+    container_name: control-center
+    depends_on:
+      - kafka
+      - zookeeper
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'connect:8083'
+      CONTROL_CENTER_KSQL_KSQLDB1_URL: "http://ksqldb-server:8088"
+      CONTROL_CENTER_KSQL_KSQLDB1_ADVERTISED_URL: "http://localhost:8088"
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      PORT: 9021
+    networks:
+      - crypto_network
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
+        reservations:
+          memory: 1g
+          cpus: '0.5'
+
+# ============================================================================
+# APPLICATION SERVICES - PRODUCERS
+# ============================================================================
+
+  # --------------------------------------------------------------------------
+  # PRODUCER 1s - High Frequency Data
+  # --------------------------------------------------------------------------
   producer-1s:
     <<: *producer-template
     container_name: producer-1s
     environment:
       INTERVAL: 1s
 
+  # --------------------------------------------------------------------------
+  # PRODUCER 1m - Medium Frequency Data
+  # --------------------------------------------------------------------------
   producer-1m:
     <<: *producer-template
     container_name: producer-1m
     environment:
       INTERVAL: 1m
 
+  # --------------------------------------------------------------------------
+  # PRODUCER 15m - Low Frequency Data
+  # --------------------------------------------------------------------------
   producer-15m:
     <<: *producer-template
     container_name: producer-15m
     environment:
       INTERVAL: 15m
 
+  # --------------------------------------------------------------------------
+  # PRODUCER 1h - Hourly Data
+  # --------------------------------------------------------------------------
   producer-1h:
     <<: *producer-template
     container_name: producer-1h
     environment:
       INTERVAL: 1h
 
+  # --------------------------------------------------------------------------
+  # PRODUCER 1d - Daily Data
+  # --------------------------------------------------------------------------
   producer-1d:
     <<: *producer-template
     container_name: producer-1d
     environment:
       INTERVAL: 1d
 
-networks:
-  crypto_network:
-    external: true
+# ============================================================================
+# APPLICATION SERVICES - CONSUMERS
+# ============================================================================
+
+  # --------------------------------------------------------------------------
+  # CONSUMER 1s - High Frequency Processing
+  # --------------------------------------------------------------------------
+  consumer-1s:
+    <<: *consumer-template
+    container_name: consumer-1s
+    depends_on:
+      - producer-1s
+    environment:
+      <<: *env-template
+      CONSUMER_ID: "consumer-1s"
+      TOPIC: prices-1s
+
+  # --------------------------------------------------------------------------
+  # CONSUMER 1m - Medium Frequency Processing
+  # --------------------------------------------------------------------------
+  consumer-1m:
+    <<: *consumer-template
+    container_name: consumer-1m
+    depends_on:
+      - producer-1m
+    environment:
+      <<: *env-template
+      CONSUMER_ID: "consumer-1m"
+      INTERVAL: 1m
+
+  # --------------------------------------------------------------------------
+  # CONSUMER 15m - Low Frequency Processing
+  # --------------------------------------------------------------------------
+  consumer-15m:
+    <<: *consumer-template
+    container_name: consumer-15m
+    depends_on:
+      - producer-15m
+    environment:
+      <<: *env-template
+      CONSUMER_ID: "consumer-15m"
+      INTERVAL: 15m
+
+  # --------------------------------------------------------------------------
+  # CONSUMER 1h - Hourly Processing
+  # --------------------------------------------------------------------------
+  consumer-1h:
+    <<: *consumer-template
+    container_name: consumer-1h
+    depends_on:
+      - producer-1h
+    environment:
+      <<: *env-template
+      CONSUMER_ID: "consumer-1h"
+      INTERVAL: 1h
+
+  # --------------------------------------------------------------------------
+  # CONSUMER 1d - Daily Processing
+  # --------------------------------------------------------------------------
+  consumer-1d:
+    <<: *consumer-template
+    container_name: consumer-1d
+    depends_on:
+      - producer-1d
+    environment:
+      <<: *env-template
+      CONSUMER_ID: "consumer-1d"
+      INTERVAL: 1d
+
+# ============================================================================
+# STORAGE & PERSISTENCE
+# ============================================================================
 
 volumes:
   zookeeper_data:
@@ -153,3 +338,25 @@ volumes:
     name: crypto_kafka_data
   producer:
     name: crypto_producer
+  consumer: 
+    name: crypto_consumer
+
+# ============================================================================
+# SECURITY & SECRETS
+# ============================================================================
+
+secrets:
+  influxdb2-admin-username:
+    file: ./influxdb/secrets/.env.influxdb2-admin-username
+  influxdb2-admin-password:
+    file: ./influxdb/secrets/.env.influxdb2-admin-password
+  influxdb2-admin-token:
+    file: ./influxdb/secrets/.env.influxdb2-admin-token
+
+# ============================================================================
+# NETWORKING
+# ============================================================================
+
+networks:
+  crypto_network:
+    external: true
