@@ -4,6 +4,8 @@ from kafka import KafkaConsumer
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 from typing import Dict, Any, Callable
+from collections import deque
+from statistics import mean
 from os import getenv
 from time import sleep
 
@@ -15,9 +17,23 @@ def parse_message(value: bytes) -> Dict[str, Any]:
     return json.loads(value.decode('utf-8'))
 
 
+#def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: str) -> Point:
+#    """Construit un point InfluxDB à partir d'un message."""
+#    return (
+#        Point("kline")
+#        .tag("coin", data["coin"])
+#        .tag("interval", interval)
+#        .tag("type", measurement_type)
+#        .field("open", float(data["open"]))
+#        .field("high", float(data["high"]))
+#        .field("low", float(data["low"]))
+#        .field("close", float(data["close"]))
+#        .field("volume", float(data["volume"]))
+#        .field("trades", int(data["number_of_trades"]))
+#        .time(int(data["timestamp"]), WritePrecision.MS)
+#    )
 def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: str) -> Point:
-    """Construit un point InfluxDB à partir d'un message."""
-    return (
+    point = (
         Point("kline")
         .tag("coin", data["coin"])
         .tag("interval", interval)
@@ -30,18 +46,81 @@ def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: st
         .field("trades", int(data["number_of_trades"]))
         .time(int(data["timestamp"]), WritePrecision.MS)
     )
+    
+    # Ajouter les indicateurs s'ils existent
+    for key in ["sma_7", "sma_21", "ema_12", "rsi_14"]:
+        if key in data:
+            point.field(key, float(data[key]))
+    
+    return point
 
 
 def format_log_line(data: Dict[str, Any]) -> str:
     """Formate la ligne pour append dans un fichier."""
     return json.dumps(data, ensure_ascii=False) + "\n"
 
+def compute_sma(values: list[float], period: int) -> float:
+    if len(values) < period:
+        return float('nan')
+    return mean(values[-period:])
+
+def compute_ema(values: list[float], period: int) -> float:
+    if len(values) < period:
+        return float('nan')
+    multiplier = 2 / (period + 1)
+    ema = values[0]
+    for price in values[1:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
+
+def compute_rsi(prices: list[float], period: int = 14) -> float:
+    if len(prices) < period + 1:
+        return float('nan')
+    gains, losses = [], []
+    for i in range(1, len(prices)):
+        delta = prices[i] - prices[i - 1]
+        if delta >= 0:
+            gains.append(delta)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(delta))
+    avg_gain = mean(gains[-period:])
+    avg_loss = mean(losses[-period:])
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+#def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
+#    """Placeholder pour ajout d'indicateurs (pure)."""
+    # Exemple: ajout d'un simple indicateur
+#    data['sma'] = (float(data['open']) + float(data['close'])) / 2
+#    return data
+
+
 
 def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Placeholder pour ajout d'indicateurs (pure)."""
-    # Exemple: ajout d'un simple indicateur
-    data['sma'] = (float(data['open']) + float(data['close'])) / 2
-    return data
+    coin = data["coin"]
+    close_price = float(data["close"])
+    price_history.setdefault(coin, deque(maxlen=50)) 
+    price_history[coin].append(close_price)
+    history = list(price_history[coin])
+
+    sma_7 = compute_sma(history, 7)
+    sma_21 = compute_sma(history, 21)
+    ema_12 = compute_ema(history[-12:], 12)
+    rsi_14 = compute_rsi(history, 14)
+
+    return {
+        **data,
+        "sma_7": sma_7,
+        "sma_21": sma_21,
+        "ema_12": ema_12,
+        "rsi_14": rsi_14
+    }
+
+
 
 # def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
 #     return {
@@ -158,6 +237,7 @@ def process_message(
 
 def run_consumer_loop():
     """Boucle d'écoute Kafka avec traitement."""
+    
     interval = getenv("INTERVAL")
     if not interval:
         raise ValueError("La variable INTERVAL doit être définie")
@@ -212,4 +292,5 @@ def run_consumer_loop():
 # --- ENTRYPOINT --- #
 
 if __name__ == "__main__":
+    price_history = {}
     run_consumer_loop()
