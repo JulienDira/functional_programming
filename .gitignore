@@ -5,3 +5,6 @@ influxdb/data/*
 # Ignore all InfluxDB config files but keep directory structure
 influxdb/config/*
 !influxdb/config/.gitkeep
+
+grafana-storage/*
+!grafana-storage/.gitkeep

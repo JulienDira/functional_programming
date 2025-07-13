@@ -37,6 +37,7 @@ x-consumer-defaults: &consumer-template
     dockerfile: Dockerfile
   volumes:
     - ./consumer/consumer.py:/app/consumer.py
+    - ./consumer/utils:/app/utils
     - consumer:/data
   depends_on:
     - kafka
@@ -209,6 +210,21 @@ services:
           memory: 1g
           cpus: '0.5'
 
+  # --------------------------------------------------------------------------
+  # GRAFANA - Dashboard
+  # --------------------------------------------------------------------------
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./grafana-storage:/var/lib/grafana
+    networks:
+      - crypto_network
+
 # ============================================================================
 # APPLICATION SERVICES - PRODUCERS
 # ============================================================================
@@ -273,7 +289,7 @@ services:
     environment:
       <<: *env-template
       CONSUMER_ID: "consumer-1s"
-      TOPIC: prices-1s
+      INTERVAL: 1s
 
   # --------------------------------------------------------------------------
   # CONSUMER 1m - Medium Frequency Processing

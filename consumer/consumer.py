@@ -3,12 +3,13 @@ import os
 from kafka import KafkaConsumer
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
-from typing import Dict, Any, Callable
-from collections import deque
-from statistics import mean
+from typing import Dict, Any, Callable, Tuple, List
 from os import getenv
 from time import sleep
+from functools import reduce
+from collections import deque
 
+from utils.indicators import compute_ema, compute_sma, compute_rsi
 
 # --- PURE FUNCTIONS --- #
 
@@ -16,24 +17,11 @@ def parse_message(value: bytes) -> Dict[str, Any]:
     """Transforme un message Kafka brut en dictionnaire."""
     return json.loads(value.decode('utf-8'))
 
-
-#def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: str) -> Point:
-#    """Construit un point InfluxDB à partir d'un message."""
-#    return (
-#        Point("kline")
-#        .tag("coin", data["coin"])
-#        .tag("interval", interval)
-#        .tag("type", measurement_type)
-#        .field("open", float(data["open"]))
-#        .field("high", float(data["high"]))
-#        .field("low", float(data["low"]))
-#        .field("close", float(data["close"]))
-#        .field("volume", float(data["volume"]))
-#        .field("trades", int(data["number_of_trades"]))
-#        .time(int(data["timestamp"]), WritePrecision.MS)
-#    )
 def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: str) -> Point:
-    point = (
+    def maybe_add_field(p: Point, key: str) -> Point:
+        return p.field(key, float(data[key])) if key in data else p
+
+    base_point = (
         Point("kline")
         .tag("coin", data["coin"])
         .tag("interval", interval)
@@ -46,73 +34,32 @@ def build_influx_point(data: Dict[str, Any], interval: str, measurement_type: st
         .field("trades", int(data["number_of_trades"]))
         .time(int(data["timestamp"]), WritePrecision.MS)
     )
-    
-    # Ajouter les indicateurs s'ils existent
-    for key in ["sma_7", "sma_21", "ema_12", "rsi_14"]:
-        if key in data:
-            point.field(key, float(data[key]))
-    
-    return point
+
+    indicators = ["sma_7", "sma_21", "ema_12", "rsi_14"]
+    return reduce(maybe_add_field, indicators, base_point)
 
 
 def format_log_line(data: Dict[str, Any]) -> str:
     """Formate la ligne pour append dans un fichier."""
     return json.dumps(data, ensure_ascii=False) + "\n"
 
-def compute_sma(values: list[float], period: int) -> float:
-    if len(values) < period:
-        return float('nan')
-    return mean(values[-period:])
-
-def compute_ema(values: list[float], period: int) -> float:
-    if len(values) < period:
-        return float('nan')
-    multiplier = 2 / (period + 1)
-    ema = values[0]
-    for price in values[1:]:
-        ema = (price - ema) * multiplier + ema
-    return ema
-
-def compute_rsi(prices: list[float], period: int = 14) -> float:
-    if len(prices) < period + 1:
-        return float('nan')
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        delta = prices[i] - prices[i - 1]
-        if delta >= 0:
-            gains.append(delta)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(delta))
-    avg_gain = mean(gains[-period:])
-    avg_loss = mean(losses[-period:])
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-#def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
-#    """Placeholder pour ajout d'indicateurs (pure)."""
-    # Exemple: ajout d'un simple indicateur
-#    data['sma'] = (float(data['open']) + float(data['close'])) / 2
-#    return data
-
-
-
-def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
-    coin = data["coin"]
+def compute_indicators(
+    data: Dict[str, Any], 
+    history: List[float]
+) -> Tuple[Dict[str, Any], List[float]]:
+    """
+    Prend les données actuelles et l'historique des prix.
+    Retourne les données enrichies + nouvel historique (mise à jour).
+    """
     close_price = float(data["close"])
-    price_history.setdefault(coin, deque(maxlen=50)) 
-    price_history[coin].append(close_price)
-    history = list(price_history[coin])
+    updated_history = (history + [close_price])[-50:]
 
-    sma_7 = compute_sma(history, 7)
-    sma_21 = compute_sma(history, 21)
-    ema_12 = compute_ema(history[-12:], 12)
-    rsi_14 = compute_rsi(history, 14)
+    sma_7 = compute_sma(updated_history, 7)
+    sma_21 = compute_sma(updated_history, 21)
+    ema_12 = compute_ema(updated_history[-12:], 12)
+    rsi_14 = compute_rsi(updated_history, 14)
 
-    return {
+    new_data = {
         **data,
         "sma_7": sma_7,
         "sma_21": sma_21,
@@ -120,13 +67,7 @@ def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
         "rsi_14": rsi_14
     }
 
-
-
-# def compute_indicators(data: Dict[str, Any]) -> Dict[str, Any]:
-#     return {
-#         **data,
-#         'sma': (float(data['open']) + float(data['close'])) / 2
-#     }
+    return new_data, updated_history
 
 # --- EFFECTFUL FUNCTIONS --- #
 
@@ -184,12 +125,11 @@ def write_raw_data(raw_data: Dict[str, Any], write_api, bucket: str, org: str, i
     raw_point = build_influx_point(raw_data, interval, "raw")
     write_to_influx(write_api, raw_point, bucket, org)
     
-def write_enriched_data(data: Dict[str, Any], write_api, bucket: str, org: str, interval: str):
-    """Écrit les données enrichies dans InfluxDB."""
-    enriched = compute_indicators(data)
-    enriched_point = build_influx_point(enriched, interval, "enriched")
-    write_to_influx(write_api, enriched_point, bucket, org)
 
+def write_enriched_data(enriched_data: Dict[str, Any], write_api, bucket: str, org: str, interval: str):
+    """Écrit les données enrichies dans InfluxDB."""
+    enriched_point = build_influx_point(enriched_data, interval, "enriched")
+    write_to_influx(write_api, enriched_point, bucket, org)
 
 # --- PIPELINE FONCTIONNELLE --- #
 
@@ -202,6 +142,10 @@ def process_message(
     log_dir: str
 ) -> Callable[[bytes], None]:
     """Crée un handler de message avec contexte fermé."""
+    
+    # Historique des prix par coin (état local encapsulé)
+    price_histories: Dict[str, List[float]] = {}
+    
     def handle(value: bytes) -> None:
         try:
             raw_data = parse_message(value)
@@ -210,13 +154,19 @@ def process_message(
             # Chemin du fichier de log spécifique à la crypto
             log_path = os.path.join(log_dir, f"{coin}.jsonl")
             
-            # 1. Log et write brut
+            # 1. Log et write
             raw_line = format_log_line(raw_data)
             append_to_file(log_path, raw_line)
             write_raw_data(raw_data, write_api, raw_bucket, org, interval)
 
-            # 2. Enrichissement + log + write enrichi
-            enriched_data = compute_indicators(raw_data)
+            # 2. Enrichissement avec historique
+            current_history = price_histories.get(coin, [])
+            enriched_data, new_history = compute_indicators(raw_data, current_history)
+            
+            # Mise à jour de l'historique
+            price_histories[coin] = new_history
+            
+            # Log et write enrichi
             enriched_line = format_log_line(enriched_data)
             append_to_file(log_path, enriched_line)
             write_enriched_data(enriched_data, write_api, enriched_bucket, org, interval)
@@ -231,7 +181,6 @@ def process_message(
             print(f"❌ Erreur inattendue: {e}")
             
     return handle
-
 
 # --- MAIN LOOP --- #
 
