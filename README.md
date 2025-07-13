@@ -1,8 +1,6 @@
 
 # CryptoStream - Traitement Fonctionnel de Données Crypto
 
-![Architecture](assets/architecture.png)
-
 Pipeline de traitement de données crypto basé sur les principes de programmation fonctionnelle pour une analyse temps réel.
 
 ## 🚀 Fonctionnalités
